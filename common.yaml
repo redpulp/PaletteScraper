@@ -1,0 +1,494 @@
+Description: Template for setting up common infrastructure for exporting DynamoDB tables to S3 with Step Functions
+Resources:
+  DynamoDBExportsBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName:
+        Fn::Sub: "dynamodb-exports-${AWS::AccountId}-${AWS::Region}"
+
+  GlueCrawlerAndJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Referenced the following documentation while creating this IAM Role
+      # http://docs.aws.amazon.com/glue/latest/dg/create-an-iam-role.html
+      RoleName: AWSGlueServiceRoleDefault
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: glue.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      - arn:aws:iam::aws:policy/AWSGlueConsoleFullAccess
+      - arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSLambdaExecute
+      - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+      Policies:
+      - PolicyName: GlueJobTrigger
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Action:
+            - glue:StartCrawler
+            - glue:GetCrawler
+            - glue:GetCrawlerMetrics
+            - athena:StartQueryExecution
+            - s3:ListBucket
+            Effect: Allow
+            Resource: "*"
+
+  EventTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - events.amazonaws.com
+      Policies:
+      - PolicyName: GlueJobTrigger
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Action:
+            - states:StartExecution
+            Effect: Allow
+            Resource: "*"
+
+  StateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - states.amazonaws.com
+      Policies:
+      - PolicyName: GlueJobTrigger
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Action:
+            - "lambda:InvokeFunction"
+            - "glue:StartJobRun"
+            - "glue:GetJobRun"
+            - "glue:GetJobRuns"
+            - "glue:BatchStopJobRun"
+            Effect: Allow
+            Resource: "*"
+
+  DynamoDBExportStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      StateMachineName: DynamoDBExportAndAthenaLoad
+      RoleArn:
+        Fn::GetAtt:
+        - StateExecutionRole
+        - Arn
+      DefinitionString:
+        Fn::Sub:
+        - |-
+            {
+              "StartAt": "StartJobRun",
+              "States": {
+                "StartJobRun": {
+                  "Type": "Task",
+                  "ResultPath": "$.glueresult",
+                  "Resource": "arn:aws:states:::glue:startJobRun.sync",
+                  "Parameters": {
+                    "JobName.$": "$.glue_job_name",
+                    "Arguments": {
+                      "--table_name.$": "$.table_name",
+                      "--read_percentage.$": "$.read_percentage",
+                      "--output_prefix.$": "$.output_prefix",
+                      "--output_format.$": "$.output_format"
+                    }
+                  },
+                  "Next": "Start Crawler",
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "Next": "Export Failed"
+                    }
+                  ]
+                },
+                "Export Failed": {
+                  "Type": "Fail",
+                  "Cause": "One or more steps could not complete successfully",
+                  "Error": "ExportFailed"
+                },
+                "Start Crawler": {
+                  "Type": "Task",
+                  "Resource": "${StartGlueCrawler}",
+                  "Next": "Wait for Crawler",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException"],
+                      "IntervalSeconds": 3,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 1.5
+                    }
+                  ]
+                },
+                "Wait for Crawler": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "Get Crawler Status"
+                },
+                "Get Crawler Status": {
+                  "Type": "Task",
+                  "Resource": "${GetGlueCrawlerStatus}",
+                  "Next": "Crawler Finished?"
+                },
+                "Crawler Finished?": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.glue_crawler_status",
+                      "StringEquals": "SUCCEEDED",
+                      "Next": "Create Current View"
+                    },
+                    {
+                      "Variable": "$.glue_crawler_status",
+                      "StringEquals": "CANCELLED",
+                      "Next": "Export Failed"
+                    },
+                    {
+                      "Variable": "$.glue_crawler_status",
+                      "StringEquals": "FAILED",
+                      "Next": "Export Failed"
+                    }
+                  ],
+                  "Default": "Wait for Crawler"
+                },
+                "Create Current View": {
+                  "Type": "Task",
+                  "Resource": "${CreateCurrentView}",
+                  "Next": "Wait for Current View",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException"],
+                      "IntervalSeconds": 3,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 1.5
+                    }
+                  ]
+                },
+                "Wait for Current View": {
+                  "Type": "Wait",
+                  "Seconds": 5,
+                  "Next": "Get Current View Status"
+                },
+                "Get Current View Status": {
+                  "Type": "Task",
+                  "Resource": "${GetCurrentViewStatus}",
+                  "Next": "Create Current View Finished?",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException"],
+                      "IntervalSeconds": 3,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 1.5
+                    }
+                  ]
+                },
+                "Create Current View Finished?": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.athena_query_status",
+                      "StringEquals": "SUCCEEDED",
+                      "Next": "Done"
+                    },
+                    {
+                      "Variable": "$.athena_query_status",
+                      "StringEquals": "FAILED",
+                      "Next": "Export Failed"
+                    },
+                    {
+                      "Variable": "$.athena_query_status",
+                      "StringEquals": "CANCELLED",
+                      "Next": "Export Failed"
+                    }
+                  ],
+                  "Default": "Wait for Current View"
+                },
+                "Done": {
+                  "Type": "Pass",
+                  "End": true
+                }
+              }
+            }
+        - StartGlueCrawler:
+            Fn::GetAtt:
+            - StartGlueCrawler
+            - Arn
+          GetGlueCrawlerStatus:
+            Fn::GetAtt:
+            - GetGlueCrawlerStatus
+            - Arn
+          CreateCurrentView:
+            Fn::GetAtt:
+            - CreateCurrentView
+            - Arn
+          GetCurrentViewStatus:
+            Fn::GetAtt:
+            - GetCurrentViewStatus
+            - Arn
+
+  StartGlueCrawler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.crawler_trigger"
+      Runtime: python3.6
+      Timeout: "60"
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Code:
+        ZipFile:
+          |-
+            import logging
+            import datetime
+
+            import boto3
+
+            LOGGER = logging.getLogger()
+            LOGGER.setLevel(logging.INFO)
+
+            KEY_CRAWLER_NAME = 'crawler_name'
+
+            GLUE_CLIENT = boto3.client('glue')
+
+            def crawler_trigger(event, context):
+              crawler_name = event[KEY_CRAWLER_NAME]
+              GLUE_CLIENT.start_crawler(
+                Name=crawler_name
+              )
+              return event
+
+  GetGlueCrawlerStatus:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.lambda_handler"
+      Runtime: python3.6
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Code:
+        ZipFile:
+          |-
+            import json
+            import logging
+            import datetime
+
+            from dateutil.parser import parse
+
+            import boto3
+
+            LOGGER = logging.getLogger()
+            LOGGER.setLevel(logging.INFO)
+
+            GLUE_CLIENT = boto3.client('glue')
+            KEY_GLUE_CRAWLER_NAME = "crawler_name"
+            KEY_GLUE_CRAWLER_STATUS = "glue_crawler_status"
+            KEY_STARTED_ON = "StartedOn"
+            KEY_GLUE_RESULT = "glueresult"
+
+            def lambda_handler(event, context):
+                crawler_name = event[KEY_GLUE_CRAWLER_NAME]
+
+                resp = GLUE_CLIENT.get_crawler(Name=crawler_name)
+                print(resp)
+
+                # In the case of an early exit make sure the key is present but the value
+                # is a no op
+                event[KEY_GLUE_CRAWLER_STATUS] = ""
+
+                last_crawl = resp['Crawler'].get('LastCrawl')
+                if last_crawl is None:
+                    return event
+
+                last_crawl_start = last_crawl.get('StartTime')
+                # Timestamp is stored as milliseconds since the epoch
+                glue_job_start = datetime.datetime.fromtimestamp(event[KEY_GLUE_RESULT][KEY_STARTED_ON] / 1000)
+                # If the last crawl is before the snapshot_timestamp then we're still waiting
+                # for the current run we've initiated to finish
+                if last_crawl_start is None or last_crawl_start.timestamp() < glue_job_start.timestamp():
+                    return event
+
+                event[KEY_GLUE_CRAWLER_STATUS] = last_crawl['Status']
+
+                return event
+
+  CreateCurrentView:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.create_current_view_trigger"
+      Runtime: python3.6
+      Timeout: 30
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Code:
+        ZipFile:
+          |-
+            import logging
+            import os
+            import boto3
+
+            LOGGER = logging.getLogger()
+            LOGGER.setLevel(logging.INFO)
+
+            KEY_TABLE_NAME = "table_name"
+            SNAPHSHOT_TIMESTAMP = "snapshot_timestamp"
+            KEY_OUTPUT_PREFIX = "output_prefix"
+
+            ATHENA_CLIENT = boto3.client('athena')
+            S3_CLIENT = boto3.client('s3')
+
+            def create_current_view_trigger(event, context):
+              table_name = event[KEY_TABLE_NAME].lower().replace("-", "_")
+              output_prefix = event[KEY_OUTPUT_PREFIX]
+              snapshot_timestamp = get_snapshot_timestamp(output_prefix)
+              
+              query = f"CREATE OR REPLACE VIEW \"dynamodb_exports\".\"{table_name}\" AS SELECT * FROM \"dynamodb_exports\".\"snapshots_{table_name}\" WHERE {SNAPHSHOT_TIMESTAMP} = '{snapshot_timestamp}';"
+              LOGGER.info(query)
+
+              # Athena always has permissions to write to the bucket of the following structure
+              account_id = get_account_id(context)
+              region = os.environ['AWS_REGION']
+              output = f"s3://aws-athena-query-results-{account_id}-{region}"
+
+              # It's not uncommon for the start_query_execution response to return a successful response
+              # and then for the query to fail asynchronously. Check the Athena Query History to double check.
+              resp = ATHENA_CLIENT.start_query_execution(
+                  QueryString=query,
+                  ResultConfiguration={
+                      'OutputLocation': output
+                  }
+              )
+              LOGGER.info(resp)
+              event['athena_query_execution_id'] = resp['QueryExecutionId']
+
+              return event
+
+            # AWS Account ID is not available in the environment, but you can get it breaking a part the Lambda
+            # arn
+            def get_account_id(context):
+                return context.invoked_function_arn.split(":")[4]
+
+            def get_snapshot_timestamp(output_prefix):
+              split = output_prefix.split("/")
+              bucket = split[2]
+              fmt = split[3]
+              table = split[4]
+
+              # The trailing slash is really important as it allows us to query S3 for the CommonPrefixes
+              # which can be thought of as the next "folder" after a given prefix.
+              prefix = f"{fmt}/{table}/"
+
+              # Not sure if there can be so many prefixes that there's a continuation token. For now
+              # assuming that there is not
+              resp = S3_CLIENT.list_objects_v2(
+                Bucket=bucket,
+                Delimiter='/',
+                Prefix=prefix
+              )
+
+              # Each prefix will look like 'parquet/Reviews/snapshot_timestamp=2019-01-11T06:15/'
+              prefixes = [x['Prefix'].split('/')[2].split('=')[1] for x in resp['CommonPrefixes']]
+              
+              # There's no documentation on what order the CommonPrefixes come on so assume none, but we can 
+              # assume they're lexographically sortable give how the snapshot timestamp is stored
+              prefixes.sort(reverse=True)
+
+              # If the state machine has gotten this far there will always be at least one prefix
+              return prefixes[0]
+
+  GetCurrentViewStatus:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: "index.lambda_handler"
+      Runtime: python3.6
+      Role:
+        Fn::GetAtt:
+        - LambdaRole
+        - Arn
+      Code:
+        ZipFile:
+          |-
+            import logging
+            import os
+            import boto3
+
+            LOGGER = logging.getLogger()
+            LOGGER.setLevel(logging.INFO)
+
+            ATHENA_CLIENT = boto3.client('athena')
+
+            def lambda_handler(event, context):
+                query_id = event['athena_query_execution_id']
+                resp = ATHENA_CLIENT.get_query_execution(QueryExecutionId=query_id)
+
+                event['athena_query_status'] = resp['QueryExecution']['Status']['State']
+
+                return event
+
+Outputs:
+  DynamoDBExportsBucket:
+    Description: S3 bucket for DynamoDB exports
+    Export:
+      Name: DynamoDBExportsBucket
+    Value:
+      Ref: DynamoDBExportsBucket
+  GlueCrawlerAndJobRole:
+    Description: IAM Role for Glue Crawlers and Jobs
+    Export:
+      Name: GlueCrawlerAndJobRole
+    Value:
+      Ref: GlueCrawlerAndJobRole
+  EventTriggerRole:
+    Description: IAM Role for CloudWatch Events
+    Export:
+      Name: EventTriggerRole
+    Value:
+      Fn::GetAtt:
+      - EventTriggerRole
+      - Arn
+  ExportStateMachineArn:
+    Description: ARN for the Export State Machine
+    Export:
+      Name: ExportStateMachineArn
+    Value:
+      Ref: DynamoDBExportStateMachine
