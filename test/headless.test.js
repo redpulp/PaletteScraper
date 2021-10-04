@@ -1,4 +1,4 @@
-const { getColors } = require("../src/getColors");
+const { getColors } = require("src/getColors");
 jest.setTimeout(60000)
 
 test('Checking consistency between headless and headful mode', async () => {
