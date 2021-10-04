@@ -1,8 +1,9 @@
 const getColors = require("./utils/getColors");
 
 const test = async () => {
-  const response = await getColors({headless: false, videoId: 'tcYodQoapMg', convertToHex: true})
-  console.log(response)
+  console.time('getColors')
+  await getColors({headless: true, videoId: 'tcYodQoapMg'})
+  console.timeEnd('getColors')
 }
 
 test()

@@ -1,30 +1,20 @@
 "use strict";
-const fs = require('fs');
-const path = require('path');
+const fs = require('fs')
 
-const { delay, rgbToHex, getError } = require('./common')
+const { delay, getError } = require('./common')
 
 const puppeteer = require('puppeteer-extra')
 const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
 puppeteer.use(AdblockerPlugin())
 
-// AWS VERSION
-// const chromium = require('chrome-aws-lambda')
-// const { addExtra } = require('puppeteer-extra')
-// const puppeteerExtra = addExtra(chromium.puppeteer)
-// const launch = async () => {
-//   puppeteerExtra.launch({
-//     args: chromium.args,
-//     defaultViewport: chromium.defaultViewport,
-//     executablePath: await chromium.executablePath,
-//     headless: chromium.headless,
-//   })
-// }
+const ColorThief = require('colorthief')
+const convert = require('color-convert')
 
-
+// Puppeteer
+const chromium = require('chrome-aws-lambda')
+const puppeteerExtra = puppeteer.addExtra(chromium.puppeteer)
 
 const videoFrame = '#movie_player > div.html5-video-container > video'
-
 
 //An improvised selector detection function
 const doesElementExist = async (page, selector) => {
@@ -85,13 +75,22 @@ const denyYoutubeMusic = async (page) => {
   }
 }
 
-const getColors = async ({ headless, videoId, convertToHex=false }) => {
-  const browser = await puppeteer.launch({ 
-    headless,
-    args: ['--mute-audio']
-  })
+const getColors = async ({ headless, videoId, local=true }) => {
+  let browser
+  if(local) {
+    browser = await puppeteer.launch({
+      headless,
+      args: ['--mute-audio']
+    })
+  } else {
+    browser = await puppeteerExtra.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless,
+    })
+  }
   const page = await browser.newPage()
-  await page.setViewport({width: 1360, height: 780});
   await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
     waitUntil: 'domcontentloaded'
   })
@@ -106,38 +105,33 @@ const getColors = async ({ headless, videoId, convertToHex=false }) => {
   let palettes = []
 
   //Creating temporary screenshots folder
-  fs.mkdir(path.join(__dirname, 'pics'), 
-    err => {if (err?.code !== 'EEXIST') console.error(err)}
+  const folderPath = `${__dirname}/pics`
+  fs.mkdir(folderPath,
+    err => {if (err?.code !== 'EEXIST' && err) console.error(err)}
   )
 
   for (let i = 0; i < 10; i++) {
-    // Skip to next video section\
-    try{
-      frame.type(`${i}`)
+    // Skip to next video section
+    frame.type(`${i}`)
     // Let the video load to get rid of loading icon
     await delay(3500)
     // Get screenshot
-    const screenshot = await frame.screenshot({
-      path: `${__dirname}/pics/${i}.png`,
-      // captureBeyondViewport: false
-    })
-    // Get screenshot's palette in RGB values
-    } catch(err) {
-      console.log('HERE', err)
-    }
+    const imagePath = `${folderPath}/${i}.png`
+    await frame.screenshot({path: imagePath})
     
+    // Get screenshot's palette in RGB values
+    const [palette, err] = await getError(ColorThief.getPalette(imagePath))
 
-    // const swatches = await Vibrant.from(screenshot).getPalette()
-    // const colors = Object
-    //   .keys(swatches)
-    //   .reduce((acc, swatch) => {
-    //     const [r, g, b] = swatches[swatch].getRgb().map(Math.round)
-    //     const colorValue = convertToHex ? rgbToHex(r, g, b) : [r, g, b]
-    //     return { ...acc, [swatch]: colorValue }
-    //   }, {})
-    // palettes = [...palettes, colors]
+    if (err) console.error(err)
+    else palettes = [...palettes, palette.map(convert.rgb.hsl)]
   }
-  // browser.close()
+
+  //Deleting temp folder
+  fs.rmdir(folderPath, {recursive: true}, 
+    err => {if (err) console.error(err)}
+  )
+
+  browser.close()
   return palettes
 }
 

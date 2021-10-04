@@ -17,7 +17,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/handlers/demoPut.demoHandler
+      Handler: src/handlers/submitVideo.handler
       Policies:
         - DynamoDBWritePolicy:
             TableName: !Ref YoutubeVideos
@@ -25,16 +25,16 @@ Resources:
         Variables:
           TABLE_NAME: !Ref YoutubeVideos
       Events:
-        NewVideo:
+        RequestVideo:
           Type: Api
           Properties:
             Path: /submit
             Method: post
-  GetVideo:
+  GetVideoInfo:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src/handlers/demoGet.demoHandler
+      Handler: src/handlers/getVideoInfo.handler
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref YoutubeVideos
