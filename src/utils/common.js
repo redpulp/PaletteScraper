@@ -30,10 +30,10 @@ exports.serverError = (message) => APIResponse(500, {message})
 // Better error handling
 exports.getError = async (promise) => {
   try {
-    const data = await promise
-    return [data, null]
-  } catch (err) {
-    console.error(err)
-    return [null, err]
+    const result = await promise
+    return {result}
+  } catch (error) {
+    console.error(error)
+    return {error}
   }
 }

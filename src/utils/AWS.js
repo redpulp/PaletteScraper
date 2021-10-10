@@ -19,3 +19,23 @@ exports.putVideo = async (body) => {
   }
   return await client.put(params).promise()
 }
+
+exports.updateScrapedVideo = async (body) => {
+  const params = {
+    TableName: process.env.TABLE_NAME,
+    Key: {
+      id: body.id,
+      uploaded: body.uploaded
+    },
+    UpdateExpression: 'set #p = :p, #s = :s',
+    ExpressionAttributeNames: {
+      '#p': 'palettes',
+      '#s': 'scraped'
+    },
+    ExpressionAttributeValues: {
+      ':p': body.palettes,
+      ':s': 'x'
+    }
+  }
+  return await client.update(params).promise()
+}

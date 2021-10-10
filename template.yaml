@@ -3,16 +3,17 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   Youtube Palette Scraper
 
-Parameters:
-  TableName:
-    Type: String
-    Default: 'YoutubeVideos'
-
 Globals:
   Function:
     Runtime: nodejs14.x
 
 Resources:
+
+  # Lambda Functions
+  ApiDeployment:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
   SubmitVideo:
     Type: AWS::Serverless::Function
     Properties:
@@ -30,6 +31,7 @@ Resources:
           Properties:
             Path: /submit
             Method: post
+            RestApiId: !Ref ApiDeployment
   GetVideoInfo:
     Type: AWS::Serverless::Function
     Properties:
@@ -47,13 +49,61 @@ Resources:
           Properties:
             Path: /videos
             Method: get
+            RestApiId: !Ref ApiDeployment
+  ScrapeVideo:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/handlers/scrapeVideo.handler
+      Timeout: 600
+      MemorySize: 5000
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref YoutubeVideos
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref YoutubeVideos
+      Events:
+        VideoSubmitted:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt YoutubeVideos.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 1
+      EventInvokeConfig:
+        MaximumRetryAttempts: 1
+
+  # DynamoDB Table
   YoutubeVideos:
     Type: AWS::DynamoDB::Table
     Properties:
-      AttributeDefinitions: 
-        - AttributeName: id
-          AttributeType: S
+      AttributeDefinitions:
+        - AttributeName: "id"
+          AttributeType: "S"
+        - AttributeName: "uploaded"
+          AttributeType: "N"
+        - AttributeName: "scraped"
+          AttributeType: "S"
       KeySchema:
-        - AttributeName: id
+        - AttributeName: "id"
           KeyType: HASH
+        - AttributeName: "uploaded"
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+          - IndexName: scrape-index
+            KeySchema:
+              - AttributeName: "scraped"
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
       BillingMode: PAY_PER_REQUEST
+
+Outputs:
+  SubmitVideoApi:
+    Description: "API Gateway URL for SubmitVideo Lambda"
+    Value: !Sub "https://${ApiDeployment}.execute-api.${AWS::Region}.amazonaws.com/dev/submit"
+  GetVideoApi:
+    Description: "API Gateway URL for GetVideoInfo Lambda"
+    Value: !Sub "https://${ApiDeployment}.execute-api.${AWS::Region}.amazonaws.com/dev/videos"

@@ -1,20 +1,16 @@
 "use strict";
+// Node libraries
 const fs = require('fs')
-
+// Internal modules
 const { delay, getError } = require('./common')
-
-const puppeteer = require('puppeteer-extra')
-const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
-puppeteer.use(AdblockerPlugin())
-
+// External libraries
 const ColorThief = require('colorthief')
 const convert = require('color-convert')
 
-// Puppeteer
-const chromium = require('chrome-aws-lambda')
-const puppeteerExtra = puppeteer.addExtra(chromium.puppeteer)
-
-const videoFrame = '#movie_player > div.html5-video-container > video'
+// Setting up Puppeteer-extra
+const puppeteer = require('puppeteer-extra')
+const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
+puppeteer.use(AdblockerPlugin())
 
 //An improvised selector detection function
 const doesElementExist = async (page, selector) => {
@@ -83,7 +79,9 @@ const getColors = async ({ headless, videoId, local=true }) => {
       args: ['--mute-audio']
     })
   } else {
-    browser = await puppeteerExtra.launch({
+    // Combining Puppeteer-extra with chrome-aws-lambda
+    const chromium = require('chrome-aws-lambda')
+    browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath,
@@ -99,7 +97,11 @@ const getColors = async ({ headless, videoId, local=true }) => {
   await removeAds(page)
   await denyYoutubeMusic(page)
 
-  await page.waitForSelector(videoFrame)
+  // Checking validity of video ID provided
+  const videoFrame = '#movie_player > div.html5-video-container > video'
+  const isVideo = await doesElementExist(page, videoFrame)
+  if(!isVideo) return {error: "This video doesn't exist"}
+
   const frame = await page.$(videoFrame)
   
   let palettes = []
@@ -120,10 +122,10 @@ const getColors = async ({ headless, videoId, local=true }) => {
     await frame.screenshot({path: imagePath})
     
     // Get screenshot's palette in RGB values
-    const [palette, err] = await getError(ColorThief.getPalette(imagePath))
+    const {result, error} = await getError(ColorThief.getPalette(imagePath))
 
-    if (err) console.error(err)
-    else palettes = [...palettes, palette.map(convert.rgb.hsl)]
+    if (error) console.error(error)
+    else palettes = [...palettes, result.map(convert.rgb.hsl)]
   }
 
   //Deleting temp folder
@@ -132,7 +134,7 @@ const getColors = async ({ headless, videoId, local=true }) => {
   )
 
   browser.close()
-  return palettes
+  return {palettes}
 }
 
 module.exports = getColors
