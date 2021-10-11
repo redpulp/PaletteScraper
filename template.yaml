@@ -20,7 +20,7 @@ Resources:
       CodeUri: .
       Handler: src/handlers/submitVideo.handler
       Policies:
-        - DynamoDBWritePolicy:
+        - DynamoDBCrudPolicy:
             TableName: !Ref YoutubeVideos
       Environment:
         Variables:

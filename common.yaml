@@ -1,3 +1,5 @@
+#https://s3.amazonaws.com/aws-bigdata-blog/artifacts/using-glue-to-access-dynamodb-tables/common.yaml
+
 Description: Template for setting up common infrastructure for exporting DynamoDB tables to S3 with Step Functions
 Resources:
   DynamoDBExportsBucket:

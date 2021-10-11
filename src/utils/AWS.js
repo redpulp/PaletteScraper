@@ -20,12 +20,12 @@ exports.putVideo = async (body) => {
   return await client.put(params).promise()
 }
 
-exports.updateScrapedVideo = async (body) => {
+exports.updateScrapedVideo = async (video, body) => {
   const params = {
     TableName: process.env.TABLE_NAME,
     Key: {
-      id: body.id,
-      uploaded: body.uploaded
+      id: video.id,
+      uploaded: video.uploaded
     },
     UpdateExpression: 'set #p = :p, #s = :s',
     ExpressionAttributeNames: {

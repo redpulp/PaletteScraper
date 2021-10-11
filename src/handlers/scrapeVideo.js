@@ -1,19 +1,27 @@
 const getColors = require("../utils/getColors")
 const AWS = require('aws-sdk');
-const {unmarshall} = AWS.DynamoDB.Converter
+const { updateScrapedVideo } = require("../utils/AWS");
+const { unmarshall } = AWS.DynamoDB.Converter
 
 exports.handler = async (event) => {
-  console.log('records', event.Records)
   for(const record of event.Records) {
     if(record.eventName === 'INSERT') {
       const newImage = unmarshall(record.dynamodb.NewImage)
-      console.log(newImage)
-      const {palettes, error} = await getColors({
+      const {palettes, scrapingError} = await getColors({
         headless: true,
-        videoId: newImage.id,
-        local: false
+        videoId: newImage.id
       })
-      console.log({palettes, error})
+      if(scrapingError) {
+        console.error(scrapingError)
+        return
+      } else {
+        try{
+          const updatedVideo = await updateScrapedVideo(newImage, {palettes})
+          console.log('Video successfully scraped', updatedVideo)
+        } catch(err) {
+          console.error(err)
+        }
+      }
     }
   }
 }

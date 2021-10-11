@@ -2,35 +2,23 @@
 // Node libraries
 const fs = require('fs')
 // Internal modules
-const { delay, getError } = require('./common')
+const { delay, getError, doesElementExist } = require('./common')
 // External libraries
 const ColorThief = require('colorthief')
 const convert = require('color-convert')
-
-// Setting up Puppeteer-extra
-const puppeteer = require('puppeteer-extra')
 const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
-puppeteer.use(AdblockerPlugin())
-
-//An improvised selector detection function
-const doesElementExist = async (page, selector) => {
-  try {
-    await page.waitForSelector(selector, {timeout: 100})
-    return true
-  } catch(_) {
-    return false
-  }
-}
 
 const agreeToCookies = async (page) => {
-  const iAgree = '#content > div.body.style-scope.ytd-consent-bump-v2-lightbox > div.footer.style-scope.ytd-consent-bump-v2-lightbox > div.buttons.style-scope.ytd-consent-bump-v2-lightbox > ytd-button-renderer:nth-child(2)'
-  try {
-    //Accepting cookies from google
-    await page.waitForSelector(iAgree)
-    await page.click(iAgree)
-    console.info("getColors.agreeToCookies", 'OK')
-  } catch (err) {
-    console.error("getColors.agreeToCookies", err)
+  const iAgreeSelector = '#content > div.body.style-scope.ytd-consent-bump-v2-lightbox > div.footer.style-scope.ytd-consent-bump-v2-lightbox > div.buttons.style-scope.ytd-consent-bump-v2-lightbox > ytd-button-renderer:nth-child(2)'
+  await delay(2000)
+  
+  //Accepting cookies from google
+  const iAgreeElement = await doesElementExist(page, iAgreeSelector)
+  if(iAgreeElement) {
+    await page.click(iAgreeSelector)
+    console.info("getColors.agreeToCookies", 'COOKIES POP-UP FOUND')
+  } else {
+    console.info("getColors.agreeToCookies", 'COOKIES POP-UP NOT FOUND')
   }
 }
 
@@ -65,29 +53,30 @@ const denyYoutubeMusic = async (page) => {
   const denyMusicElement = await doesElementExist(page, denyMusicSelector)
   if(denyMusicElement) {
     await page.click(denyMusicSelector)
-    console.info("getColors.denyYoutubeMusic", 'POP-UP FOUND')
+    console.info("getColors.denyYoutubeMusic", 'YT MUSIC POP-UP FOUND')
   } else {
     console.info("getColors.denyYoutubeMusic", 'POP-UP NOT FOUND')
   }
 }
 
-const getColors = async ({ headless, videoId, local=true }) => {
+const getColors = async ({ headless, videoId, localFileSystem=false }) => {
   let browser
-  if(local) {
-    browser = await puppeteer.launch({
-      headless,
-      args: ['--mute-audio']
-    })
-  } else {
-    // Combining Puppeteer-extra with chrome-aws-lambda
-    const chromium = require('chrome-aws-lambda')
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: chromium.headless,
-    })
-  }
+  
+  // Combining Puppeteer-extra with chrome-aws-lambda
+  const {addExtra} = require('puppeteer-extra')
+  const chromium = require('chrome-aws-lambda')
+  const puppeteerExtra = addExtra(chromium.puppeteer)
+  puppeteerExtra.use(AdblockerPlugin())
+
+  browser = await puppeteerExtra.launch({
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath,
+    defaultViewport: { width: 1280, height: 720 },
+    headless
+  })
+  
+  
   const page = await browser.newPage()
   await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
     waitUntil: 'domcontentloaded'
@@ -98,16 +87,20 @@ const getColors = async ({ headless, videoId, local=true }) => {
   await denyYoutubeMusic(page)
 
   // Checking validity of video ID provided
+  const videoError = '#player-error-message-container'
+  const isVideoError = await doesElementExist(page, videoError)
+  if(isVideoError) {
+    browser.close()
+    return {scrapingError: "This video could not be rendered"}
+  }
+  
   const videoFrame = '#movie_player > div.html5-video-container > video'
-  const isVideo = await doesElementExist(page, videoFrame)
-  if(!isVideo) return {error: "This video doesn't exist"}
-
   const frame = await page.$(videoFrame)
   
   let palettes = []
 
   //Creating temporary screenshots folder
-  const folderPath = `${__dirname}/pics`
+  const folderPath = localFileSystem ? `${__dirname}/tmp` : `/tmp/${videoId}`
   fs.mkdir(folderPath,
     err => {if (err?.code !== 'EEXIST' && err) console.error(err)}
   )
@@ -125,10 +118,15 @@ const getColors = async ({ headless, videoId, local=true }) => {
     const {result, error} = await getError(ColorThief.getPalette(imagePath))
 
     if (error) console.error(error)
-    else palettes = [...palettes, result.map(convert.rgb.hsl)]
+    else {
+      const convertedPalettes = result
+        .map(convert.rgb.hsl)
+        .map(hsl => ({h: hsl[0], s: hsl[1], l: hsl[2]}))
+      palettes = [...palettes, convertedPalettes]
+    }
   }
 
-  //Deleting temp folder
+  // Deleting temp folder
   fs.rmdir(folderPath, {recursive: true}, 
     err => {if (err) console.error(err)}
   )
