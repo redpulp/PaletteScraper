@@ -1,5 +1,5 @@
 const { putVideo, getVideo } = require('../utils/AWS')
-const { OKResponse, badRequest, serverError, getError } = require('../utils/common')
+const { OKResponse, badRequest, serverError } = require('../utils/common')
 
 exports.handler = async (event) => {
   const body = JSON.parse(event.body)
@@ -12,10 +12,12 @@ exports.handler = async (event) => {
     if(existingVideo?.Count > 0) {
       return badRequest('This video already exists')
     } else {
-      const {error} = await getError(putVideo(videoBody))
-      return error ?
-        serverError(error) :
-        OKResponse({message: 'Video successfully submitted'})
+      try {
+        await putVideo(videoBody)
+        return OKResponse({message: 'Video successfully submitted'})
+      } catch(err) { 
+        return serverError(err)
+      }
     }
   } else {
     return badRequest('Please, provide an entry to submit')

@@ -2,7 +2,7 @@
 // Node libraries
 const fs = require('fs')
 // Internal modules
-const { delay, getError, doesElementExist } = require('./common')
+const { delay, doesElementExist } = require('./common')
 // External libraries
 const ColorThief = require('colorthief')
 const convert = require('color-convert')
@@ -44,6 +44,26 @@ const removeAds = async (page) => {
   } else {
     console.info("getColors.removeAds", 'AD NOT FOUND')
   }
+}
+
+const getInfo = async (page) => {
+  const moreButtonSelector = '#more > yt-formatted-string'
+  const moreButton = await doesElementExist(page, moreButtonSelector)
+  if(moreButton) await page.click(moreButtonSelector)
+
+  const fieldSelector = '#collapsible > ytd-metadata-row-renderer'
+  //THIS WORKS BUT THE INNER HTML MUST BE PARSED (???)
+  const elements = await page.evaluate(() => {
+    const desctiptionClass = 'style-scope ytd-metadata-row-container-renderer'
+    const descriptions = Array.from(document.getElementsByClassName(desctiptionClass)).map(el => el.innerHTML)
+    return descriptions
+  })
+
+  const titleSelector = '#title > yt-formatted-string'
+  const infoSelector = '#content > yt-formatted-string'
+
+  console.log({elements})
+  return elements
 }
 
 const denyYoutubeMusic = async (page) => {
@@ -93,6 +113,8 @@ const getColors = async ({ headless, videoId, localFileSystem=false }) => {
     browser.close()
     return {scrapingError: "This video could not be rendered"}
   }
+
+  const videoInfo = await getInfo(page)
   
   const videoFrame = '#movie_player > div.html5-video-container > video'
   const frame = await page.$(videoFrame)
@@ -105,6 +127,8 @@ const getColors = async ({ headless, videoId, localFileSystem=false }) => {
     err => {if (err?.code !== 'EEXIST' && err) console.error(err)}
   )
 
+  throw 'HALP'
+  
   for (let i = 0; i < 10; i++) {
     // Skip to next video section
     frame.type(`${i}`)
@@ -115,14 +139,14 @@ const getColors = async ({ headless, videoId, localFileSystem=false }) => {
     await frame.screenshot({path: imagePath})
     
     // Get screenshot's palette in RGB values
-    const {result, error} = await getError(ColorThief.getPalette(imagePath))
-
-    if (error) console.error(error)
-    else {
-      const convertedPalettes = result
+    try {
+      const palette = await ColorThief.getPalette(imagePath)
+      const convertedPalettes = palette
         .map(convert.rgb.hsl)
         .map(hsl => ({h: hsl[0], s: hsl[1], l: hsl[2]}))
       palettes = [...palettes, convertedPalettes]
+    } catch(err) {
+      console.error(err)
     }
   }
 

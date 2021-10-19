@@ -28,14 +28,3 @@ exports.OKResponse = (body) => APIResponse(200, body)
 exports.badRequest = (message) => APIResponse(400, {message})
 
 exports.serverError = (message) => APIResponse(500, {message})
-
-// Better error handling
-exports.getError = async (promise) => {
-  try {
-    const result = await promise
-    return {result}
-  } catch (error) {
-    console.error(error)
-    return {error}
-  }
-}

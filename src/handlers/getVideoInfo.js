@@ -1,11 +1,15 @@
 const { getVideo } = require('../utils/AWS')
-const { badRequest, OKResponse, getError } = require('../utils/common')
+const { badRequest, OKResponse } = require('../utils/common')
 
 exports.handler = async (event) => {
   const { id } = event?.queryStringParameters
   if(id) {
-    const {result, error} = await getError(getVideo(id))
-    return error ? serverError(error) : OKResponse(result.Items)
+    try{
+      const result = await getVideo(id)
+      return OKResponse(result.Items)
+    } catch(err) {
+      return serverError(err)
+    }
   } else {
     return badRequest('No id detected')
   }
