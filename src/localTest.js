@@ -3,7 +3,7 @@ const getColors = require('./utils/getColors');
 const test = async () => {
   console.time('getColors');
   const info = await getColors({
-    headless: true,
+    headless: process.argv.includes('--headless'),
     videoId: 'VPLCk-FTVvw',
     localFileSystem: true,
   });
