@@ -1,4 +1,4 @@
 {
-  "body": {"id": "1234", "name": "first video"},
+  "body": { "id": "1234", "name": "first video" },
   "httpMethod": "POST"
 }
